@@ -18,10 +18,13 @@ RUN python3 "./google_speech_data_loader.py"
 FROM ubuntu:22.04 as target
 
 COPY --from=build ./ ./
+COPY main.py ./
 COPY ist.py ./
+COPY data_parallel.py ./
 COPY ist_utils.py ./
 
-ENTRYPOINT ["python3", "./ist.py"]
-CMD ["python3", "./ist.py"]
-# ENTRYPOINT ["python3", "./distributed_3layer_subnet_centralized_ps_gloo.py"]
-# CMD ["python3", "./distributed_3layer_subnet_centralized_ps_gloo.py"]
+# ENTRYPOINT ["python3", "./ist.py"]
+# CMD ["python3", "./ist.py"]
+
+ENTRYPOINT ["python3", "./main.py"]
+CMD ["python3", "./main.py"]
