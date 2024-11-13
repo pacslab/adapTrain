@@ -89,7 +89,6 @@ class PreActResNet(torch.nn.Module):
 
 
 # This is our focus RESNET MODEL
-'''
 def PreActResNet18(blocks=[2, 2, 2, 2], out_size=512, num_classes=10):
     return PreActResNet(PreActBlock, blocks, out_size=out_size, num_classes=num_classes)
 
@@ -97,7 +96,7 @@ def PreActResNet18(blocks=[2, 2, 2, 2], out_size=512, num_classes=10):
 def PreActResNet101(blocks=[3, 4, 23, 3], out_size=512, num_classes=10):
     return PreActResNet(PreActBlock, blocks, out_size=out_size, num_classes=num_classes)
 
-'''
+
 def PreActResNet152(blocks=[3, 4, 36, 3], out_size=512, num_classes=10):
     return PreActResNet(PreActBlock, blocks, out_size=out_size, num_classes=num_classes)
 
@@ -279,9 +278,26 @@ class ISTResNetModel():
                 broadcast_module(self.base_model.layer3[i], rank_list=[0, min(current_group)],
                                  source=min(current_group))
 
+def update_sync_freq(specs, current_acc, epoch, num_sync):
+    current_sync_freq = specs['repartition_iter']
+    if current_acc < 0.2:
+        sync_freq = 100
+    elif current_acc >= 0.2 and current_acc < 0.65:
+        sync_freq = 200
+    elif current_acc >= 0.65 and current_acc < 0.67:
+        sync_freq = 100
+    elif current_acc >= 0.67 and current_acc < 0.70:
+        sync_freq = 25
+    else:
+        sync_freq = 100
+    
+    print(f'Sync Freq: {current_sync_freq} --> {sync_freq}')
+    return sync_freq
+    
+
 
 def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimizer, device, train_loader, test_loader,
-          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log):
+          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log):
     # employ a step schedule for the sub nets
     lr = specs.get('lr', 1e-2)
     if epoch > int(specs['epochs'] * 0.5):
@@ -293,6 +309,7 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             pg['lr'] = lr
     print(f'Learning Rate: {lr}')
 
+    epoch_start_time = time.time()
     # training loop
     for i, (data, target) in enumerate(train_loader):
         data = data.to(device)
@@ -334,11 +351,24 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             print(f'preparing and testing')
             ist_model.prepare_whole_model(specs, args)
             test(specs, args, ist_model, device, test_loader, epoch, num_sync, test_loss_log, test_acc_log)
+            current_acc = np.max(test_acc_log)
+            print(f'Current Accuracy = {current_acc}')
+            # if args.rank == 0:
+            #     specs['repartition_iter'] = update_sync_freq(specs, current_acc, epoch, num_sync)
+            
             print('done testing')
             start_time = time.time()
         num_iter = num_iter + 1
+    epoch_end_time = time.time()
+    epoch_duration = epoch_end_time - epoch_start_time
 
     # save model checkpoint at the end of each epoch
+    epoch_start_log[epoch-1] = epoch_start_time
+    epoch_end_log[epoch-1] = epoch_end_time
+    epoch_duration_log[epoch-1] = epoch_duration
+    np.savetxt('./log/epochs/' + model_name + '_epoch_start_time.log', epoch_start_log, fmt='%1.4f', newline=', ')
+    np.savetxt('./log/epochs/' + model_name + '_epoch_end_time.log', epoch_end_log, fmt='%1.4f', newline=', ')
+    np.savetxt('./log/epochs/' + model_name + '_epoch_durations.log', epoch_duration_log, fmt='%1.4f', newline=', ')
     if args.rank == 0:
         np.savetxt('./log/' + model_name + '_train_time.log', train_time_log, fmt='%1.4f', newline=' ')
         np.savetxt('./log/' + model_name + '_test_loss.log', test_loss_log, fmt='%1.4f', newline=' ')
@@ -381,6 +411,11 @@ def test(specs, args, ist_model: ISTResNetModel, device, test_loader, epoch, num
         test_acc_log[num_sync - 1] = val_acc
         ist_model.prepare_train(args)  # reset all scale constants
         ist_model.base_model.train()
+        return val_acc
+
+
+def list_of_ints(arg):
+    return list(map(int, arg.split(',')))
 
 
 def main():
@@ -389,13 +424,13 @@ def main():
         'model_type': 'preact_resnet',  # use to specify type of resnet to use in baseline
         'use_valid_set': False,
         'model_version': 'v1',  # only used for the mobilenet tests
-        'dataset': 'cifar100', #DATASET SPECIFICATION
-        'repartition_iter': 50,  # number of iterations to perform before re-sampling subnets
+        # 'dataset': 'cifar10', #DATASET SPECIFICATION
+        # 'repartition_iter': 50,  # number of iterations to perform before re-sampling subnets
         'epochs': 40,
         # 'world_size': 4,  # ***** number of subnets to use during training
-        'layer_sizes': [3, 4, 23, 3],  # used for resnet baseline, number of blocks in each section
+        # 'layer_sizes': [3, 4, 23, 3],  # used for resnet baseline, number of blocks in each section
         'expansion': 1.,
-        'lr': .01,
+        # 'lr': .01,
         'momentum': 0.9,
         'wd': 5e-4,
         'log_interval': 5,
@@ -403,7 +438,7 @@ def main():
     }
 
     parser = argparse.ArgumentParser(description='PyTorch ResNet (IST distributed)')
-    # parser.add_argument('--dataset', type=str, default='cifar10')
+    parser.add_argument('--dataset', type=str, default='cifar10')
     # The following dist-backed default should be changed to gloo for CPU usage
     parser.add_argument('--dist-backend', type=str, default='nccl', metavar='S',
                         help='backend type for distributed PyTorch')
@@ -413,6 +448,10 @@ def main():
                         help='rank for distributed PyTorch')
     parser.add_argument('--world-size', type=int, default=2, metavar='D',
                         help='partition group (default: 2)')
+    parser.add_argument('--epochs', type=int, default=40, metavar='D',
+                        help='epochs')
+    parser.add_argument('--layer-sizes', type=list_of_ints, metavar='S',
+                        help='layer sizes')
     parser.add_argument('--repartition_iter', type=int, default=50, metavar='N',
                         help='keep model in local update mode for how many iteration (default: 5)')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
@@ -430,6 +469,9 @@ def main():
     specs['repartition_iter'] = args.repartition_iter
     specs['lr'] = args.lr
     specs['world_size'] = args.world_size
+    specs['dataset'] = args.dataset
+    specs['layer_sizes'] = args.layer_sizes
+    specs['epochs'] = args.epochs
 
     if args.pytorch_seed == -1:
         torch.manual_seed(args.rank)
@@ -477,7 +519,7 @@ def main():
     if os.path.exists('./log/' + model_name + '_model.pth'):
         print('Loading model from a checkpoint!')
         ist_model = ISTResNetModel(
-            model=PreActResNet101(out_size=out_size, num_classes=num_classes).to(device),
+            model=PreActResNet18(out_size=out_size, num_classes=num_classes).to(device),
             num_sites=specs['world_size'], min_blocks_per_site=specs['min_blocks_per_site'])
         checkpoint = torch.load('./log/' + model_name + '_model.pth')
         ist_model.base_model.load_state_dict(checkpoint['model'])
@@ -491,11 +533,14 @@ def main():
     else:
         print('Training model from scratch!')
         ist_model = ISTResNetModel(
-            model=PreActResNet101(out_size=out_size, num_classes=num_classes).to(device),
+            model=PreActResNet18(blocks=specs['layer_sizes'], out_size=out_size, num_classes=num_classes).to(device),
             num_sites=specs['world_size'], min_blocks_per_site=specs['min_blocks_per_site'])
         train_time_log = np.zeros(1000) if args.rank == 0 else None
         test_loss_log = np.zeros(1000) if args.rank == 0 else None
         test_acc_log = np.zeros(1000) if args.rank == 0 else None
+        epoch_start_log = np.zeros(1000)
+        epoch_end_log = np.zeros(1000)
+        epoch_duration_log = np.zeros(1000)
         start_epoch = 0
         num_sync = 0
         num_iter = 0
@@ -510,7 +555,7 @@ def main():
         num_sync, num_iter, start_time, optimizer = train(
             specs, args, start_time, model_name, ist_model, optimizer, device,
             trn_dl, test_dl, epoch, num_sync, num_iter, train_time_log, test_loss_log,
-            test_acc_log)
+            test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log)
 
 
 if __name__ == '__main__':
