@@ -333,12 +333,12 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
         if (
                 ((num_iter + 1) % specs['repartition_iter'] == 0) or
                 (i == len(train_loader) - 1 and epoch == specs['epochs'])):
+            end_time = time.time()
+            elapsed_time = end_time - start_time
             print('running model sync')
             ist_model.sync_model(specs, args)
             print('model sync finished')
             num_sync = num_sync + 1
-            end_time = time.time()
-            elapsed_time = end_time - start_time
             print('Node {}: Train Num sync {} total time {:3.2f}s'.format(args.rank, num_sync, elapsed_time))
             if args.rank == 0:
                 if num_sync == 1:
@@ -484,7 +484,7 @@ def main():
         print(args.cuda_id, torch.cuda.device_count())
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
-        torch.cuda.set_per_process_memory_fraction(0.1, device=torch.device('cuda:1'))
+        # torch.cuda.set_per_process_memory_fraction(0.1, device=torch.device('cuda:1'))
     else:
         device = torch.device('cpu')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
