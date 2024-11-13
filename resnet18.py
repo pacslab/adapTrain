@@ -484,6 +484,7 @@ def main():
         print(args.cuda_id, torch.cuda.device_count())
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
+        torch.cuda.set_per_process_memory_fraction(0.1, device=torch.device('cuda:1'))
     else:
         device = torch.device('cpu')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
