@@ -297,7 +297,7 @@ def update_sync_freq(specs, current_acc, epoch, num_sync):
 
 
 def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimizer, device, train_loader, test_loader,
-          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log):
+          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log, sync_time_log):
     # employ a step schedule for the sub nets
     lr = specs.get('lr', 1e-2)
     if epoch > int(specs['epochs'] * 0.5):
@@ -309,7 +309,8 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             pg['lr'] = lr
     print(f'Learning Rate: {lr}')
 
-    epoch_start_time = time.time()
+    # epoch_start_time = time.time()
+    start_time = time.time()
     # training loop
     for i, (data, target) in enumerate(train_loader):
         data = data.to(device)
@@ -322,6 +323,7 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             optimizer = torch.optim.SGD(
                 ist_model.base_model.parameters(), lr=lr,
                 momentum=specs.get('momentum', 0.9), weight_decay=specs.get('wd', 5e-4))
+            sync_start_time = time.time()
 
         optimizer.zero_grad()
         output = ist_model.base_model(data)
@@ -333,8 +335,11 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
         if (
                 ((num_iter + 1) % specs['repartition_iter'] == 0) or
                 (i == len(train_loader) - 1 and epoch == specs['epochs'])):
-            end_time = time.time()
-            elapsed_time = end_time - start_time
+            sync_end_time = time.time()
+            sync_elapsed_time = sync_end_time - sync_start_time
+            sync_time_log.append(sync_elapsed_time)
+            # end_time = time.time()
+            # elapsed_time = end_time - start_time
             print('running model sync')
             ist_model.sync_model(specs, args)
             print('model sync finished')
@@ -359,16 +364,13 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             print('done testing')
             start_time = time.time()
         num_iter = num_iter + 1
-    epoch_end_time = time.time()
-    epoch_duration = epoch_end_time - epoch_start_time
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    train_time_log[epoch-1] = elapsed_time
 
     # save model checkpoint at the end of each epoch
-    epoch_start_log[epoch-1] = epoch_start_time
-    epoch_end_log[epoch-1] = epoch_end_time
-    epoch_duration_log[epoch-1] = epoch_duration
-    np.savetxt('./log/epochs/' + model_name + '_epoch_start_time.log', epoch_start_log, fmt='%1.4f', newline=', ')
-    np.savetxt('./log/epochs/' + model_name + '_epoch_end_time.log', epoch_end_log, fmt='%1.4f', newline=', ')
-    np.savetxt('./log/epochs/' + model_name + '_epoch_durations.log', epoch_duration_log, fmt='%1.4f', newline=', ')
+    np.savetxt(f"./log/worker-{args.rank}" + model_name + '_sync_time.log', np.array(sync_time_log), fmt='%1.4f', newline=' ')
     if args.rank == 0:
         np.savetxt('./log/' + model_name + '_train_time.log', train_time_log, fmt='%1.4f', newline=' ')
         np.savetxt('./log/' + model_name + '_test_loss.log', test_loss_log, fmt='%1.4f', newline=' ')
@@ -542,6 +544,7 @@ def main():
         epoch_start_log = np.zeros(1000)
         epoch_end_log = np.zeros(1000)
         epoch_duration_log = np.zeros(1000)
+        sync_time_log = []
         start_epoch = 0
         num_sync = 0
         num_iter = 0
@@ -556,7 +559,7 @@ def main():
         num_sync, num_iter, start_time, optimizer = train(
             specs, args, start_time, model_name, ist_model, optimizer, device,
             trn_dl, test_dl, epoch, num_sync, num_iter, train_time_log, test_loss_log,
-            test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log)
+            test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log, sync_time_log)
 
 
 if __name__ == '__main__':
