@@ -297,7 +297,7 @@ def update_sync_freq(specs, current_acc, epoch, num_sync):
 
 
 def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimizer, device, train_loader, test_loader,
-          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log, sync_time_log):
+          epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, sync_time_log):
     # employ a step schedule for the sub nets
     lr = specs.get('lr', 1e-2)
     if epoch > int(specs['epochs'] * 0.5):
@@ -541,9 +541,6 @@ def main():
         train_time_log = np.zeros(1000) if args.rank == 0 else None
         test_loss_log = np.zeros(1000) if args.rank == 0 else None
         test_acc_log = np.zeros(1000) if args.rank == 0 else None
-        epoch_start_log = np.zeros(1000)
-        epoch_end_log = np.zeros(1000)
-        epoch_duration_log = np.zeros(1000)
         sync_time_log = []
         start_epoch = 0
         num_sync = 0
@@ -559,7 +556,7 @@ def main():
         num_sync, num_iter, start_time, optimizer = train(
             specs, args, start_time, model_name, ist_model, optimizer, device,
             trn_dl, test_dl, epoch, num_sync, num_iter, train_time_log, test_loss_log,
-            test_acc_log, epoch_start_log, epoch_end_log, epoch_duration_log, sync_time_log)
+            test_acc_log, sync_time_log)
 
 
 if __name__ == '__main__':
