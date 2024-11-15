@@ -471,7 +471,7 @@ def main():
     parser.add_argument('--cuda-id', type=int, default=0, metavar='N',
                         help='cuda index, if the instance has multiple GPUs.')
     parser.add_argument('--model_name', type=str, default='cifar10_local_iter')
-    parser.add_argument('--gpu-usage-limit', type=list_of_floats, help="GPU Usage Limit for each worker")
+    parser.add_argument('--gpu-limit', type=float, help="GPU Usage Limit for each worker")
 
     args = parser.parse_args()
 
@@ -480,7 +480,7 @@ def main():
     specs['world_size'] = args.world_size
     specs['dataset'] = args.dataset
     specs['layer_sizes'] = args.layer_sizes
-    specs['gpu_limits'] = args.gpu_usage_limits
+    specs['gpu_limit'] = args.gpu_limit
     specs['epochs'] = args.epochs
 
     if args.pytorch_seed == -1:
@@ -494,8 +494,7 @@ def main():
         print(args.cuda_id, torch.cuda.device_count())
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
-        for i in range(torch.cuda.device_count()):
-            torch.cuda.set_per_process_memory_fraction(specs['gpu_limits'][i], device=torch.device(f"cuda:{i}"))
+        torch.cuda.set_per_process_memory_fraction(specs['gpu_limit'], device=torch.device(f"cuda:{args.cuda_id}"))
     else:
         device = torch.device('cpu')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
