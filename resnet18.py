@@ -421,6 +421,10 @@ def list_of_ints(arg):
     return list(map(int, arg.split(',')))
 
 
+def list_of_floats(arg):
+    return list(map(float, arg.split(',')))
+
+
 def main():
     specs = {
         'test_type': 'ist_resnet',  # should be either ist or baseline
@@ -467,6 +471,8 @@ def main():
     parser.add_argument('--cuda-id', type=int, default=0, metavar='N',
                         help='cuda index, if the instance has multiple GPUs.')
     parser.add_argument('--model_name', type=str, default='cifar10_local_iter')
+    parser.add_argument('--gpu-usage-limit', type=list_of_floats, help="GPU Usage Limit for each worker")
+
     args = parser.parse_args()
 
     specs['repartition_iter'] = args.repartition_iter
@@ -474,6 +480,7 @@ def main():
     specs['world_size'] = args.world_size
     specs['dataset'] = args.dataset
     specs['layer_sizes'] = args.layer_sizes
+    specs['gpu_limits'] = args.gpu_usage_limits
     specs['epochs'] = args.epochs
 
     if args.pytorch_seed == -1:
@@ -487,7 +494,8 @@ def main():
         print(args.cuda_id, torch.cuda.device_count())
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
-        # torch.cuda.set_per_process_memory_fraction(0.1, device=torch.device('cuda:1'))
+        for i in range(torch.cuda.device_count()):
+            torch.cuda.set_per_process_memory_fraction(specs['gpu_limits'][i], device=torch.device(f"cuda:{i}"))
     else:
         device = torch.device('cpu')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
