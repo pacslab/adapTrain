@@ -344,12 +344,12 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
             ist_model.sync_model(specs, args)
             print('model sync finished')
             num_sync = num_sync + 1
-            print('Node {}: Train Num sync {} total time {:3.2f}s'.format(args.rank, num_sync, elapsed_time))
+            print('Node {}: Train Num sync {} total time {:3.2f}s'.format(args.rank, num_sync, sync_elapsed_time))
             if args.rank == 0:
-                if num_sync == 1:
-                    train_time_log[num_sync - 1] = elapsed_time
-                else:
-                    train_time_log[num_sync - 1] = train_time_log[num_sync - 2] + elapsed_time
+                # if num_sync == 1:
+                #     train_time_log[num_sync - 1] = sync_elapsed_time
+                # else:
+                #     train_time_log[num_sync - 1] = train_time_log[num_sync - 2] + sync_elapsed_time
                 print('total time {:3.2f}s'.format(train_time_log[num_sync - 1]))
                 print('total broadcast time', test_total_time)
 
