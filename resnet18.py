@@ -367,7 +367,8 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    train_time_log[epoch-1] = elapsed_time
+    if args.rank == 0:
+        train_time_log[epoch-1] = elapsed_time
 
     # save model checkpoint at the end of each epoch
     np.savetxt(f"./log/worker-{args.rank}/" + model_name + '_sync_time.log', np.array(sync_time_log), fmt='%1.4f', newline=' ')
