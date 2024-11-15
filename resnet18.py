@@ -350,7 +350,7 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
                 #     train_time_log[num_sync - 1] = sync_elapsed_time
                 # else:
                 #     train_time_log[num_sync - 1] = train_time_log[num_sync - 2] + sync_elapsed_time
-                print('total time {:3.2f}s'.format(train_time_log[num_sync - 1]))
+                print('total time {:3.2f}s'.format(sync_time_log[num_sync - 1]))
                 print('total broadcast time', test_total_time)
 
             print(f'preparing and testing')
@@ -370,7 +370,7 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
     train_time_log[epoch-1] = elapsed_time
 
     # save model checkpoint at the end of each epoch
-    np.savetxt(f"./log/worker-{args.rank}" + model_name + '_sync_time.log', np.array(sync_time_log), fmt='%1.4f', newline=' ')
+    np.savetxt(f"./log/worker-{args.rank}/" + model_name + '_sync_time.log', np.array(sync_time_log), fmt='%1.4f', newline=' ')
     if args.rank == 0:
         np.savetxt('./log/' + model_name + '_train_time.log', train_time_log, fmt='%1.4f', newline=' ')
         np.savetxt('./log/' + model_name + '_test_loss.log', test_loss_log, fmt='%1.4f', newline=' ')
