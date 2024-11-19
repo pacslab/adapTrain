@@ -494,7 +494,9 @@ def main():
         print(args.cuda_id, torch.cuda.device_count())
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
+        print(f"Worker {args.rank}: Limit = {specs['gpu_limit']}")
         torch.cuda.set_per_process_memory_fraction(specs['gpu_limit'], device=torch.device(f"cuda:{args.cuda_id}"))
+        # torch.cuda.set_per_process_memory_fraction(0.5, device=torch.device('cuda:0'))
     else:
         device = torch.device('cpu')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
