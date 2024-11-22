@@ -8,7 +8,7 @@ import torch
 import time
 import torchvision.transforms as transforms
 from torchvision.datasets.cifar import CIFAR10
-from random import shuffle, choice, seed
+from random import shuffle, choice, seed, sample
 
 from data import (
     get_cifar10_loaders,
@@ -105,38 +105,34 @@ def PreActResNet200(blocks=[3, 4, 50, 3], out_size=512, num_classes=10):
     return PreActResNet(PreActBlock, blocks, out_size=out_size, num_classes=num_classes)
 
 '''
-def sample_block_indices_with_overlap(num_sites, num_blocks, min_blocks_per_site):
-    assert min_blocks_per_site < num_blocks
-    total_blocks = max(num_sites * min_blocks_per_site, num_blocks - 1)
-    full_perm = []
-    while total_blocks > 0.:
-        temp = [i for i in range(num_blocks - 1)]
-        shuffle(temp)
-        full_perm = full_perm + temp
-        total_blocks -= (num_blocks - 1)
-    blocks_per_site = max(int((num_blocks - 1) / num_sites), min_blocks_per_site)
-    subnet_sizes = [blocks_per_site for x in range(num_sites)]
-    remaining_blocks = num_blocks - sum(subnet_sizes) - 1
-    if remaining_blocks > 0:
-        for i in range(remaining_blocks):
-            subnet_sizes[i] += 1
-    start_idx = 0
-    site_indices = []
-    for i in range(num_sites):
-        curr_size = subnet_sizes[i]
-        curr_block = full_perm[start_idx: start_idx + curr_size]
-        curr_block = [val + 1 for val in curr_block]
-        curr_block = list(set(curr_block))
-        assert not 0 in curr_block
-        site_indices.append(curr_block)
-        start_idx += curr_size
-    for site_idx in range(len(site_indices)):
-        while len(site_indices[site_idx]) < min_blocks_per_site:
-            next_idx = choice([i + 1 for i in range(num_blocks - 1)])
-            if not next_idx in site_indices[site_idx]:
-                site_indices[site_idx].append(next_idx)
-    return site_indices
 
+def sample_block_indices_with_overlap(num_sites, num_blocks, min_blocks_per_site, ideal_blocks_per_site_list):
+    ideal_blocks_per_site_list = [(i if i > min_blocks_per_site else min_blocks_per_site) for i in ideal_blocks_per_site_list]
+    blocks_per_site_list = [i for i in ideal_blocks_per_site_list]
+    # blocks = list(range(1, num_blocks + 1))
+    while(sum(blocks_per_site_list) < num_blocks):
+        #increase blocks per site for one site with minimum deviation from the initial state
+        effect = [ (blocks_per_site_list[i] + 1 - ideal_blocks_per_site_list[i])/ideal_blocks_per_site_list[i] for i in range(num_sites)]
+        idx = effect.index(min(effect))
+        blocks_per_site_list[idx] += 1
+        
+    blocks = list(range(1, num_blocks + 1))
+    shuffle(blocks)
+    initial_site_indices = [ blocks[ (0 if i==0 else sum(blocks_per_site_list[:i])) : len(blocks) if i+1 == num_sites else sum(blocks_per_site_list[:i+1]) ] for i in range(num_sites)]
+
+    if sum(blocks_per_site_list) == num_blocks:
+        return initial_site_indices, blocks_per_site_list
+
+    for i in range(num_sites):
+        if blocks_per_site_list[i] == len(initial_site_indices[i]):
+            continue
+
+        additional_blocks_num = blocks_per_site_list[i] - len(initial_site_indices[i])
+        sampling_pool = set(range(1, num_blocks + 1)) - set(initial_site_indices[i])
+        blocks_to_add = sample(list(sampling_pool), k=additional_blocks_num)
+        initial_site_indices[i] = list(set(initial_site_indices[i]).union(set(blocks_to_add)))
+    
+    return initial_site_indices, blocks_per_site_list
 
 test_rank = 0
 test_total_time = 0
@@ -183,6 +179,40 @@ def all_reduce_module(specs, args, module: torch.nn.Module, rank_list=None):
         dist.destroy_process_group(group)
 
 
+def decide_new_blocks_per_worker(args, specs, sync_time):
+    if args.dynamic and not args.random:
+        sync_time_tensor = torch.tensor([sync_time], dtype=torch.float32).cuda()
+        gathered_times = [torch.zeros(1, dtype=torch.float32).cuda() for _ in range(dist.get_world_size())]
+        dist.all_gather(gathered_times, sync_time_tensor)
+        gathered_times = np.array([time.item() for time in gathered_times])
+        old_blocks_list = np.array(specs['init_blocks_per_site'])
+        print(f"Gathered Times: {gathered_times}")
+        print(f"Old Blocks: {old_blocks_list}")
+        blocks_per_worker_list = np.ceil(specs['layer_sizes'][2]*old_blocks_list / (gathered_times * np.sum(old_blocks_list / gathered_times))).astype(int)
+        print(f"Blocks per worker: {blocks_per_worker_list}")
+        new_blocks_per_worker,new_blocks_sizes = sample_block_indices_with_overlap(num_sites=specs['world_size'],
+                                                              num_blocks=specs['layer_sizes'][2],
+                                                              min_blocks_per_site=specs['min_blocks_per_site'],
+                                                              ideal_blocks_per_site_list=blocks_per_worker_list)
+
+    
+    elif args.dynamic and args.random:
+        blocks_tensor = torch.zeros(args.world_size).cuda()
+        if args.rank == 0:
+            blocks_per_worker_list = np.array(random_integers_sum_to_n(specs['layer_sizes'][2], specs['world_size']))
+            blocks_tensor = torch.tensor(blocks_per_worker_list, dtype=torch.int).cuda()
+            
+        dist.broadcast(blocks_tensor, src=0)
+        new_blocks = blocks_tensor.numpy()
+        new_blocks_per_worker,new_blocks_sizes = sample_block_indices_with_overlap(num_sites=specs['world_size'],
+                                                              num_blocks=specs['layer_sizes'][2],
+                                                              min_blocks_per_site=specs['min_blocks_per_site'],
+                                                              ideal_blocks_per_site_list=new_blocks)
+
+    return new_blocks_per_worker, new_blocks_sizes
+
+
+
 class ISTResNetModel():
     def __init__(self, model: PreActResNet, num_sites=4, min_blocks_per_site=0):
         self.base_model = model
@@ -206,10 +236,21 @@ class ISTResNetModel():
             self.base_model.layer3[i].active_flag = i in self.site_indices[args.rank]
             self.base_model.layer3[i].scale_constant = 1.0
 
-    def dispatch_model(self, specs, args):
-        self.site_indices = sample_block_indices_with_overlap(num_sites=self.num_sites,
+    def dispatch_model(self, specs, args, sync_time):
+        if args.dynamic:
+            self.site_indices, specs['init_blocks_per_site'] = decide_new_blocks_per_worker(args, specs, sync_time)
+            print(f"New Blocks per Site: {specs['init_blocks_per_site']}")
+        else:    
+            self.site_indices,_ = sample_block_indices_with_overlap(num_sites=self.num_sites,
                                                               num_blocks=self.base_model.num_blocks[2],
-                                                              min_blocks_per_site=self.min_blocks_per_site)
+                                                              min_blocks_per_site=self.min_blocks_per_site,
+                                                              ideal_blocks_per_site_list=specs['init_blocks_per_site'])
+            
+        
+        with open('./log/' + args.model_name + '_blocks.log', "a") as myfile:
+            myfile.write(f"{specs['init_blocks_per_site'][args.rank]} ")
+
+        print(self.site_indices)
         for i in range(1, self.base_model.num_blocks[2]):
             current_group = []
             for site_i in range(self.num_sites):
@@ -257,10 +298,15 @@ class ISTResNetModel():
 
         broadcast_module(self.base_model.layer3[0], source=0)
 
-        self.site_indices = sample_block_indices_with_overlap(num_sites=self.num_sites,
+        self.site_indices, blocks_sizes = sample_block_indices_with_overlap(num_sites=self.num_sites,
                                                               num_blocks=self.base_model.num_blocks[2],
-                                                              min_blocks_per_site=self.min_blocks_per_site)
+                                                              min_blocks_per_site=self.min_blocks_per_site,
+                                                              ideal_blocks_per_site_list=specs['init_blocks_per_site'])
+        
+        with open('./log/' + args.model_name + '_blocks.log', "a") as myfile:
+            myfile.write(f"{blocks_sizes[args.rank]} ")
 
+        print(self.site_indices)
         # # apply IST here
         for i in range(1, self.base_model.num_blocks[2]):
             broadcast_module(self.base_model.layer3[i], source=0)
@@ -277,53 +323,49 @@ class ISTResNetModel():
             if not (current_group[0] == 0):
                 broadcast_module(self.base_model.layer3[i], rank_list=[0, min(current_group)],
                                  source=min(current_group))
+    
 
-def update_sync_freq(specs, current_acc, epoch, num_sync):
-    current_sync_freq = specs['repartition_iter']
-    if current_acc < 0.2:
-        sync_freq = 100
-    elif current_acc >= 0.2 and current_acc < 0.65:
-        sync_freq = 200
-    elif current_acc >= 0.65 and current_acc < 0.67:
-        sync_freq = 100
-    elif current_acc >= 0.67 and current_acc < 0.70:
-        sync_freq = 25
-    else:
-        sync_freq = 100
+def random_integers_sum_to_n(total, count):
+    # Generate random points and sort them
+    points = sorted(sample(range(1, total), count - 1))
     
-    print(f'Sync Freq: {current_sync_freq} --> {sync_freq}')
-    return sync_freq
+    # Create intervals between points
+    numbers = [points[0]] + [points[i] - points[i - 1] for i in range(1, count - 1)] + [total - points[-1]]
     
+    return numbers
 
 
 def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimizer, device, train_loader, test_loader,
           epoch, num_sync, num_iter, train_time_log, test_loss_log, test_acc_log, sync_time_log):
     # employ a step schedule for the sub nets
     lr = specs.get('lr', 1e-2)
-    if epoch > int(specs['epochs'] * 0.5):
+    if epoch > int(specs['epochs']*0.5):
         lr /= 10
-    if epoch > int(specs['epochs'] * 0.75):
+    if epoch > int(specs['epochs']*0.75):
         lr /= 10
     if optimizer is not None:
         for pg in optimizer.param_groups:
             pg['lr'] = lr
     print(f'Learning Rate: {lr}')
 
-    # epoch_start_time = time.time()
-    start_time = time.time()
     # training loop
     for i, (data, target) in enumerate(train_loader):
         data = data.to(device)
         target = target.to(device)
         if num_iter % specs['repartition_iter'] == 0 or i == 0:
-            if num_iter > 0:
+            if num_iter>0:
+                # specs['init_blocks_per_site'] = random_integers_sum_to_n(specs['layer_sizes'][2], specs['world_size'])
                 print('running model dispatch')
-                ist_model.dispatch_model(specs, args)
+                print(f"Sync Time Log Length: {len(sync_time_log)}")
+                if len(sync_time_log) > 0:
+                    print(f"Sync Time: {sync_time_log[num_sync - 1]}")
+
+                ist_model.dispatch_model(specs, args, sync_time_log[num_sync - 1])
                 print('model dispatch finished')
+                sync_start_time = time.time()
             optimizer = torch.optim.SGD(
-                ist_model.base_model.parameters(), lr=lr,
-                momentum=specs.get('momentum', 0.9), weight_decay=specs.get('wd', 5e-4))
-            sync_start_time = time.time()
+                    ist_model.base_model.parameters(), lr=lr,
+                    momentum=specs.get('momentum', 0.9), weight_decay=specs.get('wd', 5e-4))
 
         optimizer.zero_grad()
         output = ist_model.base_model(data)
@@ -332,59 +374,63 @@ def train(specs, args, start_time, model_name, ist_model: ISTResNetModel, optimi
         optimizer.step()
         train_pred = output.max(1, keepdim=True)[1]  # get the index of the max log-probability
         train_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
+        print('Train Epoch {} iter {} <Loss: {:.6f}, Accuracy: {:.2f}%>'.format(
+                    epoch, num_iter, loss.item(), 100. * train_correct / target.shape[0]))
         if (
                 ((num_iter + 1) % specs['repartition_iter'] == 0) or
                 (i == len(train_loader) - 1 and epoch == specs['epochs'])):
+            if num_sync == 0:
+                sync_start_time = start_time
+
+            # if num_sync > 0:
+            delay = specs['time_delay']*(time.time() - sync_start_time)
+            time.sleep(delay)
             sync_end_time = time.time()
             sync_elapsed_time = sync_end_time - sync_start_time
-            sync_time_log.append(sync_elapsed_time)
-            # end_time = time.time()
-            # elapsed_time = end_time - start_time
+            sync_time_log[num_sync] = sync_elapsed_time
+            np.savetxt('./log/' + model_name + '_sync_time.log', sync_time_log, fmt='%1.4f', newline=' ')
+            
             print('running model sync')
             ist_model.sync_model(specs, args)
             print('model sync finished')
             num_sync = num_sync + 1
-            print('Node {}: Train Num sync {} total time {:3.2f}s'.format(args.rank, num_sync, sync_elapsed_time))
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print('Node {}: Train Num sync {} total time {:3.2f}s'.format(args.rank, num_sync, elapsed_time))
             if args.rank == 0:
-                # if num_sync == 1:
-                #     train_time_log[num_sync - 1] = sync_elapsed_time
-                # else:
-                #     train_time_log[num_sync - 1] = train_time_log[num_sync - 2] + sync_elapsed_time
-                print('total time {:3.2f}s'.format(sync_time_log[num_sync - 1]))
-                print('total broadcast time', test_total_time)
-
-            print(f'preparing and testing')
-            ist_model.prepare_whole_model(specs, args)
-            test(specs, args, ist_model, device, test_loader, epoch, num_sync, test_loss_log, test_acc_log)
-            current_acc = np.max(test_acc_log)
-            print(f'Current Accuracy = {current_acc}')
-            # if args.rank == 0:
-            #     specs['repartition_iter'] = update_sync_freq(specs, current_acc, epoch, num_sync)
+                if num_sync == 1:
+                    train_time_log[num_sync - 1] = elapsed_time
+                else:
+                    train_time_log[num_sync - 1] = train_time_log[num_sync - 2] + elapsed_time
+                print('total time {:3.2f}s'.format(train_time_log[num_sync - 1]))
+                print('total broadcast time',test_total_time)
             
+            print(f'preparing the whole model for testing')
+            ist_model.prepare_whole_model(specs,args)
+            print(f'model prepared, now testing')
+            test(specs,args, ist_model, device, test_loader, epoch, num_sync, test_loss_log, test_acc_log)
             print('done testing')
             start_time = time.time()
         num_iter = num_iter + 1
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    if args.rank == 0:
-        train_time_log[epoch-1] = elapsed_time
 
     # save model checkpoint at the end of each epoch
-    np.savetxt(f"./log/worker-{args.rank}/" + model_name + '_sync_time.log', np.array(sync_time_log), fmt='%1.4f', newline=' ')
     if args.rank == 0:
         np.savetxt('./log/' + model_name + '_train_time.log', train_time_log, fmt='%1.4f', newline=' ')
         np.savetxt('./log/' + model_name + '_test_loss.log', test_loss_log, fmt='%1.4f', newline=' ')
         np.savetxt('./log/' + model_name + '_test_acc.log', test_acc_log, fmt='%1.4f', newline=' ')
         checkpoint = {
-            'model': ist_model.base_model.state_dict(),
-            'epoch': epoch,
-            'num_sync': num_sync,
-            'num_iter': num_iter,
+                'model': ist_model.base_model.state_dict(),
+                'epoch': epoch,
+                'num_sync': num_sync,
+                'num_iter': num_iter,
         }
         torch.save(checkpoint, './log/' + model_name + '_model.pth')
     return num_sync, num_iter, start_time, optimizer
 
+
+
+# delay = specs['time_delay']*(time.time() - sync_start_time)
+# time.sleep(delay)
 
 def test(specs, args, ist_model: ISTResNetModel, device, test_loader, epoch, num_sync, test_loss_log, test_acc_log):
     # Do validation only on prime node in cluster.
@@ -472,6 +518,11 @@ def main():
                         help='cuda index, if the instance has multiple GPUs.')
     parser.add_argument('--model_name', type=str, default='cifar10_local_iter')
     parser.add_argument('--gpu-limit', type=float, help="GPU Usage Limit for each worker")
+    parser.add_argument('--time-delay', type=float, default=0.0, help="Time Delay (ms) for each worker")
+    parser.add_argument('--dynamic', type=bool, default=False, metavar='N', help='if uses dynamic approach')
+    parser.add_argument('--random', type=bool, default=False, metavar='N', help='if uses random approach')
+    parser.add_argument('--init-blocks-per-site', type=list_of_ints, default='6,6,6,5', metavar='N', help='initial partitioning among workers')
+
 
     args = parser.parse_args()
 
@@ -481,7 +532,9 @@ def main():
     specs['dataset'] = args.dataset
     specs['layer_sizes'] = args.layer_sizes
     specs['gpu_limit'] = args.gpu_limit
+    specs['time_delay'] = args.time_delay
     specs['epochs'] = args.epochs
+    specs['init_blocks_per_site'] = args.init_blocks_per_site
 
     if args.pytorch_seed == -1:
         torch.manual_seed(args.rank)
@@ -495,7 +548,7 @@ def main():
         assert args.cuda_id < torch.cuda.device_count()
         device = torch.device('cuda', args.cuda_id)
         print(f"Worker {args.rank}: Limit = {specs['gpu_limit']}")
-        torch.cuda.set_per_process_memory_fraction(specs['gpu_limit'], device=torch.device(f"cuda:{args.cuda_id}"))
+        torch.cuda.set_per_process_memory_fraction(specs['gpu_limit'], device=torch.device('cuda:0'))
         # torch.cuda.set_per_process_memory_fraction(0.5, device=torch.device('cuda:0'))
     else:
         device = torch.device('cpu')
@@ -551,7 +604,7 @@ def main():
         train_time_log = np.zeros(1000) if args.rank == 0 else None
         test_loss_log = np.zeros(1000) if args.rank == 0 else None
         test_acc_log = np.zeros(1000) if args.rank == 0 else None
-        sync_time_log = []
+        sync_time_log = np.zeros(1000)
         start_epoch = 0
         num_sync = 0
         num_iter = 0
