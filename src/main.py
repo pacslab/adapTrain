@@ -16,7 +16,7 @@ from src.utils import partition_layer, update_layer
 def main():
     d_config = """
     {
-        "num_workers": 3
+        "num_workers": 4
     }
     """
     p_config = """
@@ -75,6 +75,11 @@ def main():
         {
             "type": "batchnorm1d",
             "num_features": 1024
+        },
+        {
+            "type": "linear",
+            "in_features": 1024,
+            "out_features": 2048
         },
         {
             "type": "activation",

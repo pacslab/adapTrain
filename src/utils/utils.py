@@ -1,13 +1,18 @@
 import torch
 import torch.nn as nn
 
+import numpy as np
+
 from src.configurations.defaults import LAYERS_TO_PARTITION
 
 from typing import List
 
 
-def adaptive_partitioning():
-    pass
+def adaptive_partitioning(training_round_times: List[float], coefs: List[float]):
+    training_round_times = np.array(training_round_times)
+    new_coefs = np.sqrt((1/(np.sum(np.sqrt(1/(training_round_times/coefs**2)))**2))/(training_round_times/coefs**2))
+    
+    return new_coefs
 
 
 def partition_layer(layer: nn.Module,
@@ -37,7 +42,6 @@ def partition_layer(layer: nn.Module,
     
     if isinstance(layer, nn.Linear):
         weight_tensor = layer.weight
-        bias_tensor = layer.bias if layer.bias is not None else None
 
         # Partition weights and biases along both dimensions
         if partition_dim_0_indices and partition_dim_1_indices:
@@ -47,9 +51,6 @@ def partition_layer(layer: nn.Module,
                     temp_weight = torch.index_select(weight_tensor, 0, partition_dim_0_indices[i])  # Select rows (dim 0)
                     current_weight = torch.index_select(temp_weight, 1, partition_dim_1_indices[i])  # Select cols (dim 1)
                     weight_partitions.append(current_weight.clone())
-                if partition_biases and bias_tensor is not None:
-                    current_bias = torch.index_select(bias_tensor, 0, partition_dim_0_indices[i])  # Select rows (dim 0)
-                    bias_partitions.append(current_bias.clone())
 
         # Partition weights and biases along dim 0 only
         elif partition_dim_0_indices:
@@ -57,9 +58,6 @@ def partition_layer(layer: nn.Module,
                 if partition_weights:
                     current_weight = torch.index_select(weight_tensor, 0, curr_index)  # Select rows (dim 0)
                     weight_partitions.append(current_weight.clone())
-                if partition_biases and bias_tensor is not None:
-                    current_bias = torch.index_select(bias_tensor, 0, curr_index)  # Select rows (dim 0)
-                    bias_partitions.append(current_bias.clone())
 
         # Partition weights along dim 1 only
         elif partition_dim_1_indices:

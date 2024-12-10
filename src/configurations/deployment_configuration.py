@@ -43,6 +43,13 @@ class DeploymentConfiguration(Configuration):
                     "minimum": 1,
                     "description": "Number of worker nodes to use for distributed training."
                 },
+                "workers_url": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "URLs for the worker nodes."
+                }
             },
             "required": [],
             "additionalProperties": False
