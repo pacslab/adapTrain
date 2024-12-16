@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from typing import TextIO, Union, Dict
@@ -25,7 +26,6 @@ class Model(nn.Module):
 
         self.model = self._build_model(self._m_config)
         
-        del self._m_config
         del self._layer_builders
         
     
@@ -73,10 +73,9 @@ class Model(nn.Module):
         """
         layers = []
         input_channels = _m_config.get("input_channels", 1)  # Default to 1 channel if not specified
-        
+        layers.extend([self._build_flatten(None, None)])
         for layer_config in _m_config["layers"]:
             layer_type = layer_config["type"].lower()  # Standardize layer type to lowercase
-            
             # Check if the layer type is supported by the registry
             if layer_type in self._layer_builders:
                 # Build the layer(s) and append them to the layers list
@@ -239,3 +238,35 @@ class Model(nn.Module):
         elif layer_type == "batchnorm1d":
             return _m_config["num_features"]
         return current_channels
+    
+    
+    def get_optimizer(self, learning_rate=0.01):
+        """
+        Get the optimizer based on the configuration.
+
+        Returns:
+            torch.optim.Optimizer: The optimizer object.
+        """
+        optimizer_type = self._m_config.get("optimizer", {}).lower()
+        if optimizer_type == "adam":
+            return torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        elif optimizer_type == "sgd":
+            return torch.optim.SGD(self.model.parameters(), lr=learning_rate)
+        else:
+            raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
+        
+    
+    def get_loss_function(self):
+        """
+        Get the loss function based on the configuration.
+
+        Returns:
+            torch.nn.Module: The loss function object.
+        """
+        loss_function_type = self._m_config.get("loss_function", {}).lower()
+        if loss_function_type == "cross_entropy":
+            return nn.CrossEntropyLoss()
+        elif loss_function_type == "nll":
+            return nn.NLLLoss()
+        else:
+            raise ValueError(f"Unsupported loss function type: {loss_function_type}")

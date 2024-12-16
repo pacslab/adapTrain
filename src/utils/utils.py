@@ -10,7 +10,10 @@ from typing import List
 
 def adaptive_partitioning(training_round_times: List[float], coefs: List[float]):
     training_round_times = np.array(training_round_times)
-    new_coefs = np.sqrt((1/(np.sum(np.sqrt(1/(training_round_times/coefs**2)))**2))/(training_round_times/coefs**2))
+    new_coefs = np.sqrt(
+        (1 / (np.sum(np.sqrt(1 / (training_round_times / coefs.numpy()**2)))**2))
+        / (training_round_times / coefs.numpy()**2)
+    )
     
     return new_coefs
 
@@ -44,8 +47,7 @@ def partition_layer(layer: nn.Module,
         weight_tensor = layer.weight
 
         # Partition weights and biases along both dimensions
-        if partition_dim_0_indices and partition_dim_1_indices:
-            
+        if partition_dim_0_indices and partition_dim_1_indices:            
             for i in range(len(partition_dim_0_indices)):
                 if partition_weights:
                     temp_weight = torch.index_select(weight_tensor, 0, partition_dim_0_indices[i])  # Select rows (dim 0)
@@ -66,7 +68,7 @@ def partition_layer(layer: nn.Module,
                     current_weight = torch.index_select(weight_tensor, 1, curr_index)  # Select cols (dim 1)
                     weight_partitions.append(current_weight.clone())
     
-    elif isinstance(layer, nn.BatchNorm1d) and partition_dim_0_indices:
+    elif isinstance(layer, nn.BatchNorm1d) and partition_dim_0_indices:        
         for curr_index in partition_dim_0_indices:
             if partition_weights:
                 current_weight_tensor = torch.index_select(layer.weight, 0, curr_index)
@@ -99,11 +101,12 @@ def update_layer(layer: nn.Module,
     
     if not isinstance(layer, tuple(LAYERS_TO_PARTITION)):
         raise ValueError(f"Layer {layer} is not supported for partitioning.")
+        
     
     if isinstance(layer, nn.Linear):
         # Access weights and biases
-        weight_tensor = layer.weight.clone()
-        bias_tensor = layer.bias.clone() if layer.bias is not None else None
+        weight_tensor = layer.weight.detach().clone()
+        bias_tensor = layer.bias.detach().clone() if layer.bias is not None else None
 
         # Update along both dimensions (dim 0 and dim 1)
         if update_dim_0_indices is not None and update_dim_1_indices is not None:
@@ -119,8 +122,6 @@ def update_layer(layer: nn.Module,
             for i in range(len(update_weights)):
                 curr_index = update_dim_0_indices[i]
                 weight_tensor.index_copy_(0, curr_index, update_weights[i])  # Update weights
-                if bias_tensor is not None and update_biases is not None:
-                    bias_tensor.index_copy_(0, curr_index, update_biases[i])  # Update biases
 
         # Update along dim 1 only (input dimension)
         elif update_dim_1_indices is not None:
@@ -130,8 +131,8 @@ def update_layer(layer: nn.Module,
 
     elif isinstance(layer, nn.BatchNorm1d):
         # Access weights and biases
-        weight_tensor = layer.weight
-        bias_tensor = layer.bias
+        weight_tensor = layer.weight.detach().clone()
+        bias_tensor = layer.bias.detach().clone() if layer.bias is not None else None
 
         if update_dim_0_indices is not None:
             for i in range(len(update_weights)):
@@ -140,10 +141,9 @@ def update_layer(layer: nn.Module,
                 if update_biases is not None:
                     bias_tensor.index_copy_(0, curr_index, update_biases[i])  # Update biases
 
-    if update_weights is not None:
-        layer.weight.data = weight_tensor
-    
-    if update_biases is not None:
-        layer.bias.data = bias_tensor
+    with torch.no_grad():
+        layer.weight.copy_(weight_tensor)
+        if layer.bias is not None and bias_tensor is not None:
+            layer.bias.copy_(bias_tensor)
     
     return layer

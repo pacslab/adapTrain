@@ -16,26 +16,26 @@ from src.utils import partition_layer, update_layer
 def main():
     d_config = """
     {
-        "num_workers": 4
+        "num_workers": 1
     }
     """
     p_config = """
     {
-        
+        "repartition_iter": 64
     }
     """
     m_config = """
     {
-    "input_channels": 3,
+    "input_channels": 1,
     "layers": [
         {
             "type": "linear",
-            "in_features": 64,
-            "out_features": 128
+            "in_features": 4096,
+            "out_features": 4096
         },
         {
             "type": "batchnorm1d",
-            "num_features": 128
+            "num_features": 4096
         },
         {
             "type": "activation",
@@ -43,12 +43,12 @@ def main():
         },
         {
             "type": "linear",
-            "in_features": 128,
-            "out_features": 256
+            "in_features": 4096,
+            "out_features": 4096
         },
         {
             "type": "batchnorm1d",
-            "num_features": 256
+            "num_features": 4096
         },
         {
             "type": "activation",
@@ -56,34 +56,12 @@ def main():
         },
         {
             "type": "linear",
-            "in_features": 256,
-            "out_features": 512
+            "in_features": 4096,
+            "out_features": 35
         },
         {
             "type": "batchnorm1d",
-            "num_features": 512
-        },
-        {
-            "type": "activation",
-            "activation": "relu"
-        },
-        {
-            "type": "linear",
-            "in_features": 512,
-            "out_features": 1024
-        },
-        {
-            "type": "batchnorm1d",
-            "num_features": 1024
-        },
-        {
-            "type": "linear",
-            "in_features": 1024,
-            "out_features": 2048
-        },
-        {
-            "type": "activation",
-            "activation": "softmax"
+            "num_features": 35
         }
     ]
 }

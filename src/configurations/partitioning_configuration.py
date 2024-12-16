@@ -21,7 +21,7 @@ class PartitioningConfiguration(Configuration):
                 "repartition_iter": {
                 "type": "integer",
                 "minimum": 1,
-                "deafult": 20,
+                "deafult": 150,
                 "description": "Number of iterations after which to repartition the model."
                 }
             },

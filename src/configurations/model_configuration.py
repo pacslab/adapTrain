@@ -23,6 +23,36 @@ class ModelConfiguration(Configuration):
                 "enum": ["cpu", "cuda"],
                 "default": "cpu"
                 },
+                "optimizer": {
+                "type": "string",
+                "description": "Optimizer to use for training.",
+                "enum": ["adam", "sgd"],
+                "default": "sgd"
+                },
+                "loss_function": {
+                "type": "string",
+                "description": "Loss function to use for training.",
+                "enum": ["cross_entropy", "nll"],
+                "default": "nll"
+                },
+                "batch_size": {
+                "type": "integer",
+                "description": "Batch size for training.",
+                "minimum": 1,
+                "default": 128
+                },
+                "learning_rate": {
+                "type": "number",
+                "description": "Learning rate for training.",
+                "minimum": 0.000001,
+                "default": 0.001
+                },
+                "num_epochs": {
+                "type": "integer",
+                "description": "Number of epochs for training.",
+                "minimum": 1,
+                "default": 1
+                },
                 "input_channels": {
                 "type": "integer",
                 "description": "Number of input channels for the model.",
