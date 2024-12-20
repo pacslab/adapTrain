@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: adaptrain-controller
+  namespace: adaptrain
+  labels:
+    app.kubernetes.io/name: adaptrain-controller
+spec:
+  nodeName: master
+  restartPolicy: OnFailure
+  serviceAccountName: adaptrain-controller-sa
+  containers:
+    - name: controller
+      image: genericdockerhub/adaptrain-controller:latest
+      imagePullPolicy: Always
+      ports:
+        - containerPort: 9000
+          name: adaptrain-svc
+      stdin: true
+      tty: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adaptrain-service
+  namespace: adaptrain
+spec:
+  selector:
+    app.kubernetes.io/name: adaptrain-controller
+  ports:
+  - name: adaptrain-service-port
+    protocol: TCP
+    port: 90
+    targetPort: adaptrain-svc
