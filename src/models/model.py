@@ -73,7 +73,6 @@ class Model(nn.Module):
         """
         layers = []
         input_channels = _m_config.get("input_channels", 1)  # Default to 1 channel if not specified
-        layers.extend([self._build_flatten(None, None)])
         for layer_config in _m_config["layers"]:
             layer_type = layer_config["type"].lower()  # Standardize layer type to lowercase
             # Check if the layer type is supported by the registry
@@ -153,8 +152,9 @@ class Model(nn.Module):
         """
         return nn.BatchNorm1d(
             num_features=_m_config["num_features"],
+            momentum=_m_config.get("momentum", 1.0),
             affine=_m_config.get("affine", True),
-            track_running_stats=_m_config.get("track_running_stats", True),
+            track_running_stats=_m_config.get("track_running_stats", False),
         )
 
     def _build_batchnorm2d(self, _m_config, _):
@@ -213,7 +213,8 @@ class Model(nn.Module):
             "leakyrelu": nn.LeakyReLU,
             "sigmoid": nn.Sigmoid,
             "tanh": nn.Tanh,
-            "softmax": lambda: nn.Softmax(dim=_m_config.get("dim", 1))
+            "softmax": lambda: nn.Softmax(dim=_m_config.get("dim", 1)),
+            "log_softmax": lambda: nn.LogSoftmax(dim=_m_config.get("dim", 1)),
         }
         activation_type = _m_config.get("activation", "relu").lower()
         if activation_type in activations:

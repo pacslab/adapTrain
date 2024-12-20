@@ -135,7 +135,7 @@ class ModelConfiguration(Configuration):
                     "activation": {
                         "type": "string",
                         "description": "Type of activation function.",
-                        "enum": ["relu", "leakyrelu", "sigmoid", "tanh", "softmax"]
+                        "enum": ["relu", "leakyrelu", "sigmoid", "tanh", "softmax", "log_softmax"]
                     },
                     "dim": {
                         "type": "integer",

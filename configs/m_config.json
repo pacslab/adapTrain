@@ -1,0 +1,49 @@
+{
+    "num_epochs": 100,
+    "batch_size": 128,
+    "learning_rate": 0.01,
+    "input_channels": 1,
+    "layers": [
+        {
+            "type": "linear",
+            "in_features": 4096,
+            "out_features": 4096
+        },
+        {
+            "type": "batchnorm1d",
+            "num_features": 4096
+        },
+        {
+            "type": "activation",
+            "activation": "relu"
+        },
+        {
+            "type": "linear",
+            "in_features": 4096,
+            "out_features": 4096
+        },
+        {
+            "type": "batchnorm1d",
+            "num_features": 4096
+        },
+        {
+            "type": "activation",
+            "activation": "relu"
+        },
+        {
+            "type": "linear",
+            "in_features": 4096,
+            "out_features": 35
+        },
+        {
+            "type": "batchnorm1d",
+            "num_features": 35,
+            "affine": false
+        },
+        {
+            "type": "activation",
+            "activation": "log_softmax",
+            "dim": 1
+        }
+    ]
+}

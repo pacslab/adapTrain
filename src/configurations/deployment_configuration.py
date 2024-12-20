@@ -49,6 +49,23 @@ class DeploymentConfiguration(Configuration):
                         "type": "string"
                     },
                     "description": "URLs for the worker nodes."
+                },
+                "workers_image": {
+                    "type": "string",
+                    "default": "genericdockerhub/adaptrain-worker:latest",
+                    "description": "URL of the workers' docker image"
+                },
+                "namespace": {
+                    "type": "string",
+                    "default": "adaptrain",
+                    "description": "The namespace used for deployment"
+                },
+                "node_names": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "names of the nodes in the cluster to be used for deployment"
                 }
             },
             "required": [],

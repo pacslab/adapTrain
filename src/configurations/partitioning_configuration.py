@@ -14,7 +14,7 @@ class PartitioningConfiguration(Configuration):
         """
         self._config_json_schema = {
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "title": "PartitioningConfiguration Configuration Schema",
+            "title": "Partitioning Configuration Schema",
             "description": "Schema for the partitioning configuration file.",
             "type": "object",
             "properties": {
@@ -23,6 +23,12 @@ class PartitioningConfiguration(Configuration):
                 "minimum": 1,
                 "deafult": 150,
                 "description": "Number of iterations after which to repartition the model."
+                },
+                "log_interval": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 25,
+                "description": "Number of iterations after which to log the training loss."
                 }
             },
             "required": [],

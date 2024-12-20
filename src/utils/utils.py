@@ -9,13 +9,23 @@ from typing import List
 
 
 def adaptive_partitioning(training_round_times: List[float], coefs: List[float]):
+    """_summary_
+    
+    Args:
+        training_round_times (List[float]): Training round times.
+        coefs (List[float]): Coefficients.
+        
+    Returns:
+        _type_: New coefficients calculated adaptively.
+    """
+    
     training_round_times = np.array(training_round_times)
     new_coefs = np.sqrt(
         (1 / (np.sum(np.sqrt(1 / (training_round_times / coefs.numpy()**2)))**2))
         / (training_round_times / coefs.numpy()**2)
     )
     
-    return new_coefs
+    return torch.tensor(new_coefs)
 
 
 def partition_layer(layer: nn.Module,
@@ -113,9 +123,9 @@ def update_layer(layer: nn.Module,
             for i in range(len(update_weights)):
                 curr_index_0 = update_dim_0_indices[i]
                 curr_index_1 = update_dim_1_indices[i]
-                temp_tensor = torch.index_select(weight_tensor, 0, curr_index_0)
-                temp_tensor.index_copy_(1, curr_index_1, update_weights[i])  # Update along dim 1
-                weight_tensor.index_copy_(0, curr_index_0, temp_tensor)  # Update along dim 0
+                
+                row_indices_1, col_indices_1 = torch.meshgrid(curr_index_0, curr_index_1, indexing="ij")
+                weight_tensor.index_put_((row_indices_1.flatten(), col_indices_1.flatten()), update_weights[i].flatten(), accumulate=False)
 
         # Update along dim 0 only (output dimension)
         elif update_dim_0_indices is not None:

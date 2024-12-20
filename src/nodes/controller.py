@@ -1,7 +1,7 @@
 import random
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader
+from torch.utils.data import Subset, DataLoader
 from torchvision import datasets, transforms
 
 import numpy as np
@@ -9,6 +9,8 @@ import numpy as np
 from tqdm import tqdm
 
 from multiprocessing import Process
+
+from kubernetes import client, config
 
 from typing import TextIO, Union, Dict, List
 
@@ -21,29 +23,35 @@ from src.utils import partition_layer
 from src.utils import update_layer
 from src.utils import adaptive_partitioning
 
-from src.nodes import Worker
+from src.dataset import AdapTrainDataset
 
 from src.models import Model
 
 from src.logger import logger
-
-import src.google_speech_data_loader as speech_dataset
 
 
 class Controller:
     
     def __init__(self,
                  m_config: Union[TextIO, Dict],
+                 p_config: Union[TextIO, Dict],
                  d_config: Union[TextIO, Dict],
-                 p_config: Union[TextIO, Dict],) -> None:
+                 dataset_path: str = None) -> None:
+        
+        if dataset_path is None:
+            raise ValueError("Please provide the dataset path.")
+        
+        torch.manual_seed(1)
         
         self._d_config = DeploymentConfiguration(d_config)
         self._m_config = ModelConfiguration(m_config).__dict__
         self._p_config = PartitioningConfiguration(p_config).__dict__
         
+        self.dataset_path = dataset_path
+        
         self.raw_model = Model(m_config)
         
-        print(self.raw_model)
+        logger.info(f"Model for training: {self.raw_model}")
 
         # partitioned_indices includes the indices of the layers to partition for each worker
         self.layers_to_partition_indices, \
@@ -51,17 +59,24 @@ class Controller:
                 self.partitioned_parameters_to_workers_per_layer = self._extract_layers_to_partition()
 
         self.num_of_workers = self._d_config.num_workers
+        self.workers_image = self._d_config.workers_image
+        self.node_names = self._d_config.node_names
+        self.namespace = self._d_config.namespace
+        self.service_url = self._get_service_info()
         
         # Initial partition coefficients
         self.partition_coefficients = torch.tensor([1 / self._d_config.num_workers] * self._d_config.num_workers)
         
         self.training_round_times = torch.tensor([0.0] * self._d_config.num_workers)
 
-        self.workers: List[Worker] = []
         
         self._init_nodes()
+        self._init_controller()
         
-        # self._destroy_nodes()
+        # self._scheduler()
+        
+        # self._destroy()
+
         
         
     def _init_controller(self):
@@ -70,58 +85,74 @@ class Controller:
                                 rank=0,
                                 world_size=self._d_config.num_workers + 1)
 
-        self.scheduler()
+        self._scheduler()
 
 
-    def _launch_process(self,
-                        rank: int,
-                        backend: str,
-                        init_method: str,
-                        world_size: int) -> None:
 
-        self.workers.append(
-            Worker(
-                rank=rank,
-                backend=backend,
-                init_method=init_method,
-                world_size=world_size,
-                m_config=self._m_config,
-                p_config=self._p_config
-            )
+    def _get_service_info(self):
+        config.load_incluster_config()
+        api = client.CoreV1Api()
+        service = api.read_namespaced_service("adaptrain-service", self.namespace)
+
+        if service.spec.ports and service.spec.cluster_ip:
+            service_ip = service.spec.cluster_ip
+            service_port = service.spec.ports[0].port
+            return f"tcp://{service_ip}:{service_port}"
+        else:
+            raise ValueError(f"No ports found for service adaptrain-service in namespace {self.namespace}")
+
+
+    def _deploy_worker(self, worker_rank):
+        config.load_incluster_config()
+        
+        container = client.V1Container(
+            name=f"worker-{worker_rank}",
+            image=self.workers_image,
+            image_pull_policy="Always",
+            stdin=True,
+            tty=True,
+            args=[
+                "--rank", f"{worker_rank}",
+                "--dist-url", f"{self.service_url}"
+                ],
         )
+
+        pod_spec = client.V1PodSpec(
+            containers=[container],
+            restart_policy="Never",
+            node_name=self.node_names[worker_rank - 1]
+        )
+
+        pod_metadata = client.V1ObjectMeta(
+            name=f"adaptrain-worker-{worker_rank}",
+            namespace=self.namespace,
+            labels={"app.kubernetes.io/name": f"adaptrain-worker-{worker_rank}"}
+        )
+
+        pod = client.V1Pod(
+            api_version="v1",
+            kind="Pod",
+            metadata=pod_metadata,
+            spec=pod_spec,
+        )
+
+        api = client.CoreV1Api()
+        api.create_namespaced_pod(namespace=self.namespace, body=pod)
+        logger.info(f"Worker {worker_rank} deployed successfully.")
         
     
-    def _destroy_nodes(self):
-        for worker in tqdm(self.workers):
-            worker.destroy()
+    # def _destroy_nodes(self):
+    #     for worker in tqdm(self.workers):
+    #         worker.destroy()
             
-        logger.info("All nodes have been destroyed.")
+    #     # logger.info("All nodes have been destroyed.")
     
     
     def _init_nodes(self):
-        processes = []
-        
-        p = Process(target=self._init_controller, args=())
-        p.start()
-        processes.append(p)
-
         for rank in tqdm(range(1, self.num_of_workers + 1)):
-            p = Process(
-                target=self._launch_process,
-                args= (
-                        rank,
-                        self._d_config.dist_backend, 
-                        self._d_config.dist_url, 
-                        self._d_config.num_workers + 1
-                    )
-            )
-            p.start()
-            processes.append(p)
-
-        for p in processes:
-            p.join()
+            self._deploy_worker(rank)
             
-        logger.info("All nodes have been initialized.")
+        logger.info("All nodes have been deployed.")
         
     
     def _generate_partitions(self):
@@ -130,37 +161,46 @@ class Controller:
                 self.partitioned_parameters_to_workers_per_layer = self._extract_layers_to_partition()
                 
         linear_layers_to_partition = [layer_i for layer_i in self.layers_to_partition_indices if self.raw_model.model[layer_i].__class__.__name__ == "Linear"]
-
         for i, layer_i in enumerate(self.layers_to_partition_indices):
             if self.raw_model.model[layer_i].__class__.__name__ == "Linear":
-                layer_size = self.raw_model.model[layer_i].out_features
+                if layer_i != linear_layers_to_partition[-1]:
+                    layer_size = self.raw_model.model[layer_i].out_features
+                else:
+                    layer_size = self.raw_model.model[layer_i].in_features
                 partition_dim_0 = True if layer_i != linear_layers_to_partition[-1] else False
                 partition_dim_1 = True if layer_i != linear_layers_to_partition[0] else False
             elif self.raw_model.model[layer_i].__class__.__name__ == "BatchNorm1d":
                 layer_size = self.raw_model.model[layer_i].num_features
                 partition_dim_0 = True
                 partition_dim_1 = False
+            
+            if self.raw_model.model[layer_i].__class__.__name__ == "BatchNorm1d" or layer_i == linear_layers_to_partition[-1]:
+                previous_linear_layer_index = self.layers_to_partition_indices.index(max((idx for idx in linear_layers_to_partition if idx < layer_i), default=None))
+                self.partitioned_indices_per_workers_per_layer[i] = self.partitioned_indices_per_workers_per_layer[previous_linear_layer_index]
+            else:
                 
-            layer_neurons = np.arange(layer_size)
-            np.random.shuffle(layer_neurons)
-            
-            cursor = 0
-            for worker_index in range(self.num_of_workers):
-                if worker_index < self.num_of_workers - 1:
-                    end_cursor = cursor + int(self.partition_coefficients[worker_index] * layer_size)
-                else:
-                    end_cursor = layer_size
+                layer_neurons = np.arange(layer_size)
+                np.random.shuffle(layer_neurons)
+                
+                cursor = 0
+                for worker_index in range(self.num_of_workers):
+                    if worker_index < self.num_of_workers - 1:
+                        end_cursor = cursor + int(self.partition_coefficients[worker_index] * layer_size)
+                    else:
+                        end_cursor = layer_size
 
-                # Generate current indexes based on whether coefficients are equal
-                current_indexes = torch.tensor(layer_neurons[cursor:end_cursor])
+                    # Generate current indexes based on whether coefficients are equal
+                    current_indexes = torch.tensor(layer_neurons[cursor:end_cursor])
 
-                # Update cursor and log the indexes
-                cursor = end_cursor
-                self.partitioned_indices_per_workers_per_layer[i][worker_index] = current_indexes.detach().clone()
-            
+                    # Update cursor and log the indexes
+                    cursor = end_cursor
+                    self.partitioned_indices_per_workers_per_layer[i][worker_index] = current_indexes.detach().clone()
+
+            previous_linear_layer_index = self.layers_to_partition_indices.index(max((idx for idx in linear_layers_to_partition if idx < layer_i), default=0))
+
             dim_0_indices = self.partitioned_indices_per_workers_per_layer[i] if partition_dim_0 else None
-            dim_1_indices = self.partitioned_indices_per_workers_per_layer[i - 1] if partition_dim_1 else None
-                
+            dim_1_indices = self.partitioned_indices_per_workers_per_layer[previous_linear_layer_index] if partition_dim_1 else None
+   
             partitioned_weights, partitioned_biases = partition_layer(
                 self.raw_model.model[layer_i],
                 True,
@@ -175,16 +215,15 @@ class Controller:
     def _receive_training_round_times(self):
         for i in range(self.num_of_workers):
             dist.recv(tensor=self.training_round_times[i], src=i + 1)
-            # print(f"Received training round time from worker {i}: {self.training_round_times[i]}")
-
         
-        # self.partition_coefficients = adaptive_partitioning(self.training_round_times, self.partition_coefficients)
-        # print(self.partition_coefficients)
+        self.partition_coefficients = adaptive_partitioning(self.training_round_times, self.partition_coefficients)
+        
+        logger.info(f"New Partitioning Distribution: {self.partition_coefficients}")
     
     
     def _send_coefficients_to_workers(self):
         for i in range(self.num_of_workers):
-            dist.send(tensor=self.partition_coefficients[i].clone().detach(), dst=i + 1)
+            dist.send(tensor=torch.tensor(self.partition_coefficients), dst=i + 1)
     
     
     def _send_partitions_to_workers(self):
@@ -194,19 +233,17 @@ class Controller:
                 partitioned_weights, partitioned_biases = self.partitioned_parameters_to_workers_per_layer[i]
                 
                 for worker_i in range(self.num_of_workers):
-                    # print(f"Sending layer {layer_i} to worker {worker_i + 1}: {partitioned_weights[worker_i].shape}")
                     if layer.weight is not None:
-                        dist.send(tensor=partitioned_weights[worker_i].clone().detach(), dst=worker_i + 1)
+                        dist.send(tensor=partitioned_weights[worker_i], dst=worker_i + 1)
                     if layer.bias is not None:
-                        dist.send(tensor=partitioned_biases[worker_i].clone().detach(), dst=worker_i + 1)
+                        dist.send(tensor=partitioned_biases[worker_i], dst=worker_i + 1)
             else:
                 for worker_i in range(self.num_of_workers):
                     if hasattr(layer, 'weight') and layer.weight is not None:
-                        dist.send(tensor=layer.weight.data.clone().detach(), dst=worker_i + 1)
+                        dist.send(tensor=layer.weight.data, dst=worker_i + 1)
                     if hasattr(layer, 'bias') and layer.bias is not None:
-                        dist.send(tensor=layer.weight.data.clone().detach(), dst=worker_i + 1)
-                
-    
+                        dist.send(tensor=layer.weight.data, dst=worker_i + 1)
+
     
     def _receive_learned_partitions_from_workers(self):
         linear_layers_to_partition = [layer_i for layer_i in self.layers_to_partition_indices if self.raw_model.model[layer_i].__class__.__name__ == "Linear"]
@@ -217,7 +254,6 @@ class Controller:
                 partitioned_weights, partitioned_biases = self.partitioned_parameters_to_workers_per_layer[i]
                 
                 for worker_i in range(self.num_of_workers):
-                    # print(partitioned_weights[worker_i].shape, layer.weight.shape)
                     if layer.weight is not None:
                         dist.recv(tensor=partitioned_weights[worker_i], src=worker_i + 1)
                     if layer.bias is not None:
@@ -230,20 +266,13 @@ class Controller:
                     partition_dim_0 = True
                     partition_dim_1 = False
 
-                        
+                previous_linear_layer_index = self.layers_to_partition_indices.index(max((idx for idx in linear_layers_to_partition if idx < layer_i), default=0))                        
                 dim_0_indices = self.partitioned_indices_per_workers_per_layer[i] if partition_dim_0 else None
-                dim_1_indices = self.partitioned_indices_per_workers_per_layer[i - 1] if partition_dim_1 else None
+                dim_1_indices = self.partitioned_indices_per_workers_per_layer[previous_linear_layer_index] if partition_dim_1 else None
                 
                 new_layer = update_layer(layer, partitioned_weights, partitioned_biases, dim_0_indices, dim_1_indices)
-                #Might be buggy
+
                 self.raw_model.model[layer_i] = new_layer
-            
-            else:
-                # TODO: Add support for other layers
-                # Aggregating the trained non-partitioned layers from the workers
-                # for worker_i in range(1, self.num_of_workers):
-                #     dist.recv(tensor=self.raw_model.model[layer_i], src=worker_i)
-                pass
         
     
     
@@ -269,52 +298,69 @@ class Controller:
         
         
         
-    def scheduler(self):
+    def _scheduler(self):
+        """__summary__
+        Main function to schedule the training process with the workers.
+        """
+
         self._generate_partitions()
         
         num_epochs = self._m_config["num_epochs"]
         batch_size = self._m_config["batch_size"]
 
-        train_set = speech_dataset.train_dataset()
-        test_set = speech_dataset.test_dataset()
+        train_set = AdapTrainDataset(X_path=f"{self.dataset_path}/train_x.npy", y_path=f"{self.dataset_path}/train_y.npy")
+        
+        test_set = AdapTrainDataset(X_path=f"{self.dataset_path}/test_x.npy", y_path=f"{self.dataset_path}/test_y.npy")
+
         train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True,
                                 drop_last=True)
         test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True,
                                 drop_last=False)
         
+        subset_size = len(train_loader) // self.num_of_workers
+        
         for epoch_i in range(num_epochs):
-            for batch_i, (X, y) in enumerate(train_loader):
-                if batch_i % self._p_config["repartition_iter"] == 0 and batch_i != 0:
-                    print("Controller: Repartitioning")
-                    self._send_coefficients_to_workers()
-                    self._generate_partitions()
-                    self._send_partitions_to_workers()
-                    print("Controller: Sent partitions to workers")
+            self.raw_model.train()
+            for batch_i in range(subset_size):
+                if batch_i % self._p_config["repartition_iter"] == 0:
+                    if epoch_i > 0 or batch_i > 0:
+                        logger.info(f"Controller: Repartitioning at epoch {epoch_i}, batch {batch_i}")
+                        self._send_coefficients_to_workers()
+                        self._generate_partitions()
+                        self._send_partitions_to_workers()
+                        logger.info(f"Controller: Partitions sent to workers")
                 
-                if (batch_i + 1) % self._p_config["repartition_iter"] == 0 or batch_i == len(train_loader) - 1:
-                    print("Controller: Receiving learned partitions")
+                if (batch_i + 1) % self._p_config["repartition_iter"] == 0 or batch_i == subset_size - 1:
+                    logger.info(f"Controller: Receiving learned partitions from workers")
                     self._receive_learned_partitions_from_workers()
                     self._receive_training_round_times()
+                    logger.info(f"Controller: Learned partitions received from workers and updated the raw model")
             
             logger.info(f"Epoch {epoch_i} finished.")
             
-            self._test_model(test_loader)
+            self._test_and_save_model(test_loader)
       
             
-    def _test_model(self, test_loader):
-        import torch.nn as nn
+    def _test_and_save_model(self, test_loader):
         self.raw_model.eval()
-        test_loss = 0.0
+
         test_correct = 0
         test_total = 0
+
         with torch.no_grad():
-            for _, batch in enumerate(test_loader):
-                data, target = batch['wav'].float(), batch['label']
-                output = self.raw_model(data)
-                test_loss += nn.functional.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-                test_pred = output.max(1, keepdim=True)[1]  # get the index of the max log-probability
-                test_correct += test_pred.eq(target.view_as(test_pred)).sum().item()
-                test_total += target.shape[0]
+            for _, (X, y) in enumerate(test_loader):
+                output = self.raw_model(X)
+                
+                test_pred = output.max(1, keepdim=True)[1]
+                test_correct += test_pred.eq(y.view_as(test_pred)).sum().item()
+                test_total += y.shape[0]
+
             test_acc = float(test_correct) / float(test_total)
-            test_loss /= float(test_total)
-        logger.info(f"Accuracy: {test_acc}")
+
+        logger.info(f"Accuracy: %{test_acc * 100:.2f} Correct: {test_correct}, Total: {test_total}")
+        
+        model_name = f"model_acc_{test_acc:.4f}.pth"
+        
+        torch.save(self.raw_model.state_dict(), model_name)
+        
+        logger.info(f"Model saved as {model_name} with accuracy %{test_acc * 100:.2f}")

@@ -1,0 +1,8 @@
+{
+    "num_workers": 4,
+    "dist_backend": "gloo",
+    "dist_url": "tcp://127.0.0.1:9000",
+    "workers_image": "genericdockerhub/adaptrain-worker:latest",
+    "node_names": ["bist-worker-5", "bist-worker-1", "bist-worker-2", "bist-worker-3"],
+    "namespace": "adaptrain"
+}
